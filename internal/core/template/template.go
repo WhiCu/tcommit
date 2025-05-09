@@ -1,100 +1,178 @@
-// Package template implements a template engine for TCommit.
-// TODO: refactor
+// Package template provides a simple template engine for string substitution.
+// It supports basic variable substitution with optional choices and default values.
 package template
 
 import (
 	"bytes"
-	"fmt"
 	"io"
-	"regexp"
 	"strings"
 )
 
-// placeholderRe matches patterns like {{.Key}} or {{.Key: choice1|choice2|@default}}
-var placeholderRe = regexp.MustCompile(`\{\{\.(\w+)(?::\s*([^}]+))?\}\}`)
+const (
+	// Template markers
+	openMarker  = "{{"
+	closeMarker = "}}"
 
-// Template holds template bytes, replacements, and an async result channel.
+	// Variable markers
+	varPrefix   = "."
+	choiceSep   = ":"
+	choiceDelim = "|"
+	defPrefix   = "@"
+)
+
+// Node represents a part of the template: either text or a placeholder.
+// It is an interface that defines how template parts are rendered.
+type Node interface {
+	// WriteTo writes the rendered node to w, using replacements from r.
+	// It returns an error if the node cannot be rendered.
+	WriteTo(w io.Writer, r Replacer) error
+}
+
+// Template holds parsed nodes and provides methods for template manipulation.
+// It is the main type for working with templates.
 type Template struct {
-	content      []byte
-	replacements map[string]string
-	rendered     chan []byte
+	Nodes []Node
 }
 
-// New loads the template from r into bytes and starts async parsing.
-func New(r io.Reader, replacements map[string]string) *Template {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		panic("failed to read template: " + err.Error())
+// Parse reads the template from r and returns a Template.
+// It reads the entire content of r into memory before parsing.
+// Returns an error if reading fails.
+//
+// Syntax: {{.key}} or {{.key:choice1|choice2|@default}}
+func Parse(r io.Reader) (*Template, error) {
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(r); err != nil {
+		return nil, err
 	}
-	t := &Template{
-		content:      data,
-		replacements: replacements,
-		rendered:     make(chan []byte, 1),
-	}
-	go t.parse()
-	return t
+	return ParseString(buf.String())
 }
 
-// parse substitutes placeholders in the byte slice and sends result.
-func (t *Template) parse() {
-	// Use byte-based replacement to avoid unnecessary string conversions
-	result := placeholderRe.ReplaceAllFunc(t.content, func(match []byte) []byte {
-		parts := placeholderRe.FindSubmatch(match)
-		if len(parts) < 2 {
-			return match
-		}
-		key := string(parts[1])
-		var params string
-		if len(parts) > 2 {
-			params = string(parts[2])
-		}
+// findNextTemplate finds the next template expression in the string.
+// It searches for the pattern {{...}} starting from startPos.
+// Returns the start and end positions of the template, and whether it was found.
+func findNextTemplate(data string, startPos int) (start, end int, found bool) {
+	openPos := strings.Index(data[startPos:], openMarker)
+	if openPos < 0 {
+		return 0, 0, false
+	}
+	openPos += startPos
 
-		allowed, def := parseParams(params)
+	closePos := strings.Index(data[openPos+len(openMarker):], closeMarker)
+	if closePos < 0 {
+		return 0, 0, false
+	}
+	closePos += openPos + len(openMarker)
 
-		value, exists := t.replacements[key]
-		if !exists {
-			if def == "" {
-				panic("missing required key: " + key)
+	return openPos, closePos + len(closeMarker), true
+}
+
+// ParseString parses a template string directly.
+// It is more efficient than Parse when the input is already a string.
+// Returns an error if the template syntax is invalid.
+//
+// Example:
+//
+//	tmpl, err := ParseString("Hello {{.name}}!")
+func ParseString(data string) (*Template, error) {
+	nodes := make([]Node, 0, len(data)/10) // Estimate initial capacity
+
+	pos := 0
+	for {
+		// Find next template expression
+		start, end, found := findNextTemplate(data, pos)
+		if !found {
+			// No more templates, add remaining text if any
+			if len(data[pos:]) > 0 {
+				nodes = append(nodes, &TextNode{Text: data[pos:]})
 			}
-			value = def
+			break
 		}
 
-		if len(allowed) > 0 && !contains(allowed, value) {
-			panic(fmt.Sprintf("invalid value '%s' for key '%s' (allowed: %v)", value, key, allowed))
+		// Add text before template if any
+		if start > pos {
+			nodes = append(nodes, &TextNode{Text: data[pos:start]})
 		}
-		return []byte(value)
-	})
-	t.rendered <- result
+
+		// Extract and parse template token
+		token := data[start+len(openMarker) : end-len(closeMarker)]
+		node, err := parseToken(token)
+		if err != nil {
+			return nil, err
+		}
+
+		nodes = append(nodes, node)
+		pos = end
+	}
+
+	return &Template{
+		Nodes: nodes,
+	}, nil
 }
 
-// Parse blocks until rendering completes and returns an io.Reader over bytes.
-func (t *Template) Parse() io.Reader {
-	data := <-t.rendered
-	return bytes.NewReader(data)
+// parseToken parses a single template token into a Node.
+// It handles both simple variables and variables with choices.
+// Returns an error if the token syntax is invalid.
+func parseToken(token string) (Node, error) {
+	t := strings.TrimSpace(token)
+	if !strings.HasPrefix(t, varPrefix) {
+		return nil, NewInvalidTokenSyntaxError(token)
+	}
+
+	body := t[len(varPrefix):]
+	var key, def string
+	choices := make([]string, 0, 4) // Pre-allocate for common case
+	hasDef := false
+
+	if idx := strings.Index(body, choiceSep); idx >= 0 {
+		key = strings.TrimSpace(body[:idx])
+		rest := body[idx+len(choiceSep):]
+		parts := strings.Split(rest, choiceDelim)
+
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if strings.HasPrefix(p, defPrefix) {
+				def = p[len(defPrefix):]
+				hasDef = true
+				// choices = append(choices, def)
+			} else {
+				choices = append(choices, p)
+			}
+		}
+	} else {
+		key = strings.TrimSpace(body)
+	}
+
+	return &VarNode{
+		Key:     key,
+		Choices: choices,
+		Default: def,
+		HasDef:  hasDef,
+	}, nil
 }
 
-// parseParams splits parameter string into allowed values and default.
-func parseParams(params string) (allowed []string, def string) {
-	for _, p := range strings.Split(params, "|") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.HasPrefix(p, "@") {
-			def = p[1:]
-		} else {
-			allowed = append(allowed, p)
+// Execute renders the template to a string using the provided Replacer.
+// It processes all nodes in sequence and returns the final string.
+// Returns an error if any node fails to render.
+func (t *Template) Execute(r Replacer) (string, error) {
+	var out strings.Builder
+	out.Grow(len(t.Nodes) * 32) // Estimate average node size
+
+	for _, node := range t.Nodes {
+		if err := node.WriteTo(&out, r); err != nil {
+			return "", err
 		}
 	}
-	return
+	return out.String(), nil
 }
 
-// contains checks if val exists in slice.
-func contains(slice []string, val string) bool {
-	for _, v := range slice {
-		if v == val {
-			return true
+// ExecuteTo writes the rendered template directly to the provided writer.
+// It is more efficient than Execute when you want to write directly to a file or network connection.
+// Returns an error if any node fails to render.
+func (t *Template) ExecuteTo(w io.Writer, r Replacer) error {
+	for _, node := range t.Nodes {
+		if err := node.WriteTo(w, r); err != nil {
+			return err
 		}
 	}
-	return false
+	return nil
 }
