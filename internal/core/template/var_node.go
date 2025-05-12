@@ -23,7 +23,7 @@ func (v *VarNode) WriteTo(w io.Writer, r Replacer) error {
 		}
 	}
 
-	if len(v.Choices) > 0 && found {
+	if len(v.Choices) > 0 && found && !(v.HasDef && len(v.Choices) == 1) {
 		if !v.isValidChoice(val) {
 			return NewInvalidValueError(val, v.Key, v.Choices)
 		}

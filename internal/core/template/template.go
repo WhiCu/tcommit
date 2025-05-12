@@ -133,7 +133,7 @@ func parseToken(token string) (Node, error) {
 			if strings.HasPrefix(p, defPrefix) {
 				def = p[len(defPrefix):]
 				hasDef = true
-				// choices = append(choices, def)
+				choices = append(choices, def)
 			} else {
 				choices = append(choices, p)
 			}

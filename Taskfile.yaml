@@ -1,6 +1,52 @@
 version: '3'
 
 tasks:
+  test:
+    desc: "Run tests"
+    env:
+      CONFIG_PATH: "local.yaml"
+    cmds:
+      - echo "$ENDPOINT"
+      - pwd
+      - go test -v -cover ./...
   run:
+    desc: "Run app"
+    deps: [test]
     cmds:
       - go run cmd/main.go
+    
+  build:
+    desc: "Build binary"
+    cmds:
+      - task: build-linux
+      - task: build-windows
+  build-linux:
+    desc: "Build binary (linux)"
+    platforms: [linux]
+    aliases: [blin]
+    cmds:
+      - go build -o bin/main.exe cmd/main.go
+  build-windows:
+    desc: "Build binary (windows)"
+    platforms: [windows]
+    aliases: [bwin]
+    cmds:
+      - go build -o bin/main.exe cmd/main.go
+
+  clean:
+    desc: "Clean binary"
+    cmds:
+      - task: clean-linux
+      - task: clean-windows
+  clean-linux:
+    desc: "Clean binary (linux)"
+    platforms: [linux]
+    aliases: [clin]
+    cmds:
+      - rm -rf bin
+  clean-windows:
+    desc: "Clean binary (windows)"
+    platforms: [windows]
+    aliases: [cwin]
+    cmds:
+      - rmdir /s /q bin
