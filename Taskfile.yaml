@@ -6,8 +6,6 @@ tasks:
     env:
       CONFIG_PATH: "local.yaml"
     cmds:
-      - echo "$ENDPOINT"
-      - pwd
       - go test -v -cover ./...
   run:
     desc: "Run app"
@@ -25,13 +23,13 @@ tasks:
     platforms: [linux]
     aliases: [blin]
     cmds:
-      - go build -o bin/main.exe cmd/main.go
+      - go build -o bin/tcommit.exe cmd/main.go
   build-windows:
     desc: "Build binary (windows)"
     platforms: [windows]
     aliases: [bwin]
     cmds:
-      - go build -o bin/main.exe cmd/main.go
+      - go build -o bin/tcommit.exe cmd/main.go
 
   clean:
     desc: "Clean binary"
